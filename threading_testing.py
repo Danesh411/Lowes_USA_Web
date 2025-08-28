@@ -1,4 +1,6 @@
 import json
+from traceback import print_tb
+
 from curl_cffi import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -6,17 +8,8 @@ import random
 from parsel import Selector
 from pymongo import MongoClient
 from evpn import ExpressVpnApi
-
-def change_vpn():
-    # while True:
-    with ExpressVpnApi() as api:
-        # locations = [loc for loc in api.locations if loc["country_code"] in ("US", "UK", "SG", "DE", "IN", "TR", "ID", "TH", "MY")]
-        locations = [loc for loc in api.locations if loc["country_code"] in ("UK", "SG", "DE", "IN", "TR",  "MY")]
-        loc = random.choice(locations)  # Choose a random location from all available
-        api.connect(loc["id"])
-        print(f"Connected to: {loc['name']}")
-        # time.sleep(35)
-        # api.disconnect()
+import pydash as _
+# counters = 0
 
 # MongoDB Configuration
 MONGO_URI = "mongodb://localhost:27017"  # Change to your URI
@@ -50,63 +43,127 @@ IMPERSONATIONS = [
 ]
 
 
+def change_vpn():
+    # while True:
+    with ExpressVpnApi() as api:
+        # locations = [loc for loc in api.locations if loc["country_code"] in ("US", "UK", "SG", "DE", "IN", "TR", "ID", "TH", "MY")]
+        locations = [loc for loc in api.locations if loc["country_code"] in ("UK", "SG", "DE", "IN", "TR",  "MY")]
+        loc = random.choice(locations)  # Choose a random location from all available
+        api.connect(loc["id"])
+        print(f"Connected to: {loc['name']}")
+        # time.sleep(35)
+        # api.disconnect()
+
 def fetch(task):
-    # product_id = task.get("product_id")
+    # global counters
     url = task.get("product_url")
+    split_url_id = url.split("/")[-1]
+    updated_url = f"https://www.lowes.com/wpd/{split_url_id}/productdetail/1046/Guest"
 
     attempt_flag = True
-    while attempt_flag:
-    # for attempt in range(20):  # retry up to 5 times
+    for attempt in range(20):
+        # if attempt_flag == False:
+    # while attempt_flag:
+        #   # retry up to 5 times
+
         ua = random.choice(USER_AGENTS)
         impersonate = random.choice(IMPERSONATIONS)
         headers = {
-            "accept": "application/json, text/plain, */*",
-            "accept-language": "en-US,en;q=0.9",
-            "referer": url,
-            "user-agent": ua,
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'accept-language': 'en-US,en;q=0.9',
+            'priority': 'u=0, i',
+            'sec-ch-ua': '"Not;A=Brand";v="99", "Google Chrome";v="139", "Chromium";v="139"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'none',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+            'user-agent': ua,
         }
         try:
-            resp = requests.get(url, headers=headers, impersonate=impersonate, timeout=30)
+            resp = requests.get(updated_url, headers=headers, impersonate=impersonate, timeout=5)
             if resp.status_code == 200:
                 try:
-                    my_selector = Selector(text=resp.text)
-                    price_checked = my_selector.xpath('//script[contains(text(),"priceCurrency")]/text()').get()
-                    price_json_load = json.loads(price_checked)
-                    price_check = price_json_load[2].get("offers","").get("price","")
+                    my_json = resp.json()
+
+                    details = my_json.get("productDetails", {})
+                    item_data = details.get(split_url_id, {})
+                    location = item_data.get("location", {})
+
+                    price_data = location.get("price", {}).get("pricingDataList", [{}])[0]
+                    base_price = price_data.get("basePrice", "")
+                    final_price = price_data.get("finalPrice", "")
+                    retail_price = price_data.get("retailPrice", "")
+
+                    offer_list = []
+                    offer_loop = location.get("promotion", {}).get("productLevelPromotions", {})
+                    for offer_ls in offer_loop:
+                        offer_msg = offer_ls.get("detailPageMessage", {}).get("shortDescription", {})
+                        offer_list.append(offer_msg)
+                    offer = offer_list if offer_list else ""
+
+                    # Inventory: Pickup and Delivery
+                    pickup = ""
+                    delivery = ""
+
+                    item_avail_list = location.get("itemInventory", {}).get("itemAvailList", [])
+                    for point in item_avail_list:
+                        msg = point.get("fullMtdMsg", "")
+                        date = point.get("itmLdTm", "")
+                        qty = point.get("totalQty", 0)
+
+                        if msg == "Pickup":
+                            pickup = f"date: {date}, quantity: {qty}"
+                        elif msg == "Delivery":
+                            delivery = f"date: {date}, quantity: {qty}"
+
                 except:
-                    price_check = ''
+                    print(resp.json())
+                    base_price = ''
+                    final_price = ''
+                    retail_price = ''
+                    offer = ''
+                    pickup = ''
+                    delivery = ''
                 attempt_flag = False
-                # print("Good response ....." if price_check else "Bad response .......",url)
-                print("Good response .....")
-                # Optionally: update MongoDB Status to 'fetched'
-                return {
-                    "success": True,
-                    "product_url": url,
-                    "product_price": price_check,
-                    "Status_code": resp.status_code,
-                    "length": len(resp.text),
-                    "impersonate": impersonate,
-                    "user_agent": ua[:40],
-                    "error": None
+                response_checker = _.get(my_json, f"productDetails.{split_url_id}.product.omniItemId", "N/A")
+                # counters += 1
+                print(f"Good response data available.....,{resp.text[:50]}" if response_checker else "Bad response ......")
+                # print(counters)
+                # Update MongoDB
+                client = MongoClient(MONGO_URI)
+                db = client[DB_NAME]
+                collection = db[COLLECTION_NAME]
+
+                update_data = {
+                    "Status": "Done",
+                    "base_price": base_price,
+                    "final_price": final_price,
+                    "retail_price": retail_price,
+                    "offer": offer,
+                    "pickup": pickup,
+                    "delivery": delivery,
+                    "last_fetched": time.strftime("%Y-%m-%d %H:%M:%S")
                 }
+
+                collection.update_one(
+                    {"product_url": url},
+                    {"$set": update_data}
+                )
+                client.close()
+                return None
             else:
                 # time.sleep(0.5)
                 continue
         except Exception as e:
             err = str(e)
             print(f"[Exception]:{err}")
+            print(url)
+            print(updated_url)
             # time.sleep(1)
             continue
-    # After retries
-    return {
-        "success": False,
-        "product_url": url,
-        "Status_code": None,
-        "length": 0,
-        "impersonate": impersonate,
-        "user_agent": ua[:40],
-        "error": str(e)
-    }
 
 
 def run_scraping_from_mongo(batch_size):
@@ -141,27 +198,13 @@ def run_scraping_from_mongo(batch_size):
         # Run concurrent fetch
         start_time = time.time()
         results = []
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        with ThreadPoolExecutor(max_workers=50) as executor:
             futures = [executor.submit(fetch, task) for task in tasks]
             for future in as_completed(futures):
                 results.append(future.result())
 
         end_time = time.time()
-
         print(f"Batch completed in {end_time - start_time:.2f} seconds")
-        for r in results:
-            # print(r)
-            # Update MongoDB with result
-            Status = "success" if r["success"] else "failed"
-            Price = r["product_price"]
-            collection.update_one(
-                {"product_url": r["product_url"]},
-                {"$set": {
-                    "Status": Status,
-                    "Price": Price,
-                }}
-            )
-
         # Rotate IP (if using change_vpn)
         try:
             print("Changing VPN...")
@@ -177,4 +220,4 @@ def run_scraping_from_mongo(batch_size):
 # Main Entry
 # ---------------------------
 if __name__ == "__main__":
-    run_scraping_from_mongo(500)
+    run_scraping_from_mongo(100)
