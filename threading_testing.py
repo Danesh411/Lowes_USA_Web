@@ -76,12 +76,13 @@ def fetch(task):
                 except:
                     price_check = ''
                 attempt_flag = False
-                print("Good response ....." if price_check else "Bad response .......",url)
-                # print("Good response .....")
+                # print("Good response ....." if price_check else "Bad response .......",url)
+                print("Good response .....")
                 # Optionally: update MongoDB Status to 'fetched'
                 return {
                     "success": True,
                     "product_url": url,
+                    "product_price": price_check,
                     "Status_code": resp.status_code,
                     "length": len(resp.text),
                     "impersonate": impersonate,
@@ -140,7 +141,7 @@ def run_scraping_from_mongo(batch_size):
         # Run concurrent fetch
         start_time = time.time()
         results = []
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=100) as executor:
             futures = [executor.submit(fetch, task) for task in tasks]
             for future in as_completed(futures):
                 results.append(future.result())
@@ -152,10 +153,12 @@ def run_scraping_from_mongo(batch_size):
             # print(r)
             # Update MongoDB with result
             Status = "success" if r["success"] else "failed"
+            Price = r["product_price"]
             collection.update_one(
                 {"product_url": r["product_url"]},
                 {"$set": {
                     "Status": Status,
+                    "Price": Price,
                 }}
             )
 
@@ -174,4 +177,4 @@ def run_scraping_from_mongo(batch_size):
 # Main Entry
 # ---------------------------
 if __name__ == "__main__":
-    run_scraping_from_mongo(400)
+    run_scraping_from_mongo(500)
